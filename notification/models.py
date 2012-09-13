@@ -1,15 +1,16 @@
 import datetime
-
 try:
     import cPickle as pickle
 except ImportError:
     import pickle
-
+try:
+    from mailer import send_mail, send_html_mail    
+except ImportError:
+    from django.core.mail import send_mail    
 from django.db import models
 from django.db.models.query import QuerySet
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
-from django.core.mail import send_mail
 from django.core.urlresolvers import reverse
 from django.template import Context
 from django.template.loader import render_to_string
@@ -140,7 +141,7 @@ class Notice(models.Model):
     sender = models.ForeignKey(User, null=True, related_name="sent_notices", verbose_name=_("sender"))
     message = models.TextField(_("message"))
     notice_type = models.ForeignKey(NoticeType, verbose_name=_("notice type"))
-    added = models.DateTimeField(_("added"), default=datetime.datetime.now)
+    added = models.DateTimeField(_("added"), auto_now_add=True)
     unseen = models.BooleanField(_("unseen"), default=True)
     archived = models.BooleanField(_("archived"), default=False)
     on_site = models.BooleanField(_("on site"))
@@ -307,7 +308,6 @@ def send_now(users, label, extra_context=None, on_site=True, sender=None):
             "current_site": current_site,
         })
         context.update(extra_context)
-        
         # get prerendered format messages
         messages = get_formatted_messages(formats, label, context)
         
@@ -316,16 +316,22 @@ def send_now(users, label, extra_context=None, on_site=True, sender=None):
             "message": messages["short.txt"],
         }, context).splitlines())
         
-        body = render_to_string("notification/email_body.txt", {
+        message_plaintext = render_to_string("notification/email_body.txt", {
             "message": messages["full.txt"],
+        }, context)
+        
+        message_html = render_to_string("notification/email_body.txt", {
+            "message": messages["full.html"],
         }, context)
         
         notice = Notice.objects.create(recipient=user, message=messages["notice.html"],
             notice_type=notice_type, on_site=on_site, sender=sender)
         if should_send(user, notice_type, "1") and user.email and user.is_active: # Email
             recipients.append(user.email)
-        send_mail(subject, body, settings.DEFAULT_FROM_EMAIL, recipients)
-    
+        try:
+            send_html_mail(subject, message_plaintext, message_html, settings.DEFAULT_FROM_EMAIL, recipients)
+        except NameError:
+            send_mail(subject, message_plaintext, settings.DEFAULT_FROM_EMAIL, recipients)
     # reset environment to original language
     activate(current_language)
 
