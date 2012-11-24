@@ -378,13 +378,15 @@ def queue(users, label, extra_context=None, on_site=True, sender=None):
 
 class ObservedItemManager(models.Manager):
     
-    def all_for(self, observed, signal):
+    def all_for(self, observed, signal, exclude=None):
         """
         Returns all ObservedItems for an observed object,
         to be sent when a signal is emited.
         """
         content_type = ContentType.objects.get_for_model(observed)
         observed_items = self.filter(content_type=content_type, object_id=observed.id, signal=signal)
+        if exclude:
+            observed_items = observed_items.exclude(user__in=exclude)
         return observed_items
     
     def get_for(self, observed, observer, signal):
@@ -445,13 +447,13 @@ def stop_observing(observed, observer, signal="post_save"):
     observed_item.delete()
 
 
-def send_observation_notices_for(observed, signal="post_save", extra_context=None):
+def send_observation_notices_for(observed, signal="post_save", extra_context=None, exclude=None):
     """
     Send a notice for each registered user about an observed object.
     """
     if extra_context is None:
         extra_context = {}
-    observed_items = ObservedItem.objects.all_for(observed, signal)
+    observed_items = ObservedItem.objects.all_for(observed, signal, exclude)
     for observed_item in observed_items:
         observed_item.send_notice(extra_context)
     return observed_items
