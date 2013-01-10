@@ -336,6 +336,51 @@ def send_now(users, label, extra_context=None, on_site=True, sender=None):
     # reset environment to original language
     activate(current_language)
 
+def send_now_user_independant(email_list, label, extra_context=None, sender=None):
+    """
+    This is intended to only send emails, without the Notice´s logic, i.e
+    without creating objects, or checking settings. This gives the possibility
+    to just send emails to a list, not to registered users on the db.
+    Like a wrapper around send_mail with the possibility to follow current
+    notification pattern of creatin a NoticeType, and using templates formats.
+    """    
+    notice_type = NoticeType.objects.get(label=label)    
+    current_site = Site.objects.get_current()
+
+    formats = (
+        "short.txt",
+        "full.txt",
+        "notice.html",
+        "full.html",
+    )
+    
+    context = Context({
+        "sender": sender,
+        "notice": ugettext(notice_type.display),
+        "current_site": current_site,
+    })
+    context.update(extra_context)
+    # get prerendered format messages
+    messages = get_formatted_messages(formats, label, context)
+    
+    # Strip newlines from subject
+    subject = "".join(render_to_string("notification/email_subject.txt", {
+        "message": messages["short.txt"],
+    }, context).splitlines())
+    
+    message_plaintext = render_to_string("notification/email_body.txt", {
+        "message": messages["full.txt"],
+    }, context)
+    
+    message_html = render_to_string("notification/email_body.txt", {
+        "message": messages["full.html"],
+    }, context)
+
+    if email_list:
+        try:
+            send_html_mail(subject, message_plaintext, message_html, settings.DEFAULT_FROM_EMAIL, email_list)
+        except NameError:
+            send_mail(subject, message_plaintext, settings.DEFAULT_FROM_EMAIL, email_list)
 
 def send(*args, **kwargs):
     """
