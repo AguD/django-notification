@@ -338,7 +338,7 @@ def send_now(users, label, extra_context=None, on_site=True, sender=None):
 
 def send_user_independant(email_list, label, extra_context=None, sender=None):
     """
-    This is intended to only send emails, without the Notice´s logic, i.e
+    This is intended to only send emails, without the Notice's logic, i.e
     without creating objects, or checking settings. This gives the possibility
     to just send emails to a list, not to registered users on the db.
     Like a wrapper around send_mail with the possibility to follow current
@@ -401,7 +401,7 @@ def send(*args, **kwargs):
             return send_now(*args, **kwargs)
 
 
-def queue(users, label, extra_context=None, on_site=True, sender=None):
+def queue(users, label, extra_context=None, on_site=True, sender=None, when_to_send=None):
     """
     Queue the notification in NoticeQueueBatch. This allows for large amounts
     of user notifications to be deferred to a seperate process running outside
@@ -415,7 +415,7 @@ def queue(users, label, extra_context=None, on_site=True, sender=None):
         users = [user.pk for user in users]
     notices = []
     for user in users:
-        notices.append((user, label, extra_context, on_site, sender))
+        notices.append((user, label, extra_context, on_site, sender, when_to_send))
     NoticeQueueBatch(pickled_data=pickle.dumps(notices).encode("base64")).save()
 
 

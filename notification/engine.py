@@ -17,6 +17,7 @@ from lockfile import FileLock, AlreadyLocked, LockTimeout
 
 from notification.models import NoticeQueueBatch
 from notification import models as notification
+from django.utils import timezone
 
 # lock timeout value. how long to wait for the lock to become available.
 # default behavior is to never wait for the lock to be available.
@@ -45,17 +46,21 @@ def send_all():
         try:
             for queued_batch in NoticeQueueBatch.objects.all():
                 notices = pickle.loads(str(queued_batch.pickled_data).decode("base64"))
-                for user, label, extra_context, on_site, sender in notices:
-                    try:
-                        user = User.objects.get(pk=user)
-                        logging.info("emitting notice %s to %s" % (label, user))
-                        # call this once per user to be atomic and allow for logging to
-                        # accurately show how long each takes.
-                        notification.send_now([user], label, extra_context, on_site, sender)
-                    except User.DoesNotExist:
-                        # Ignore deleted users, just warn about them
-                        logging.warning("not emitting notice %s to user %s since it does not exist" % (label, user))
-                    sent += 1
+                for user, label, extra_context, on_site, sender, when_to_send in notices:
+                    if not when_to_send or (when_to_send and timezone.now() >= when_to_send):
+                        try:
+                            user = User.objects.get(pk=user)
+                            logging.info("emitting notice %s to %s" % (label, user))
+                            # call this once per user to be atomic and allow for logging to
+                            # accurately show how long each takes.
+                            notification.send_now([user], label, extra_context, on_site, sender)
+                        except User.DoesNotExist:
+                            # Ignore deleted users, just warn about them
+                            logging.warning("not emitting notice %s to user %s since it does not exist" % (label, user))
+                        sent += 1
+                    else:
+                        notice = [(user, label, extra_context, on_site, sender, when_to_send)]
+                        NoticeQueueBatch(pickled_data=pickle.dumps(notice).encode("base64")).save()
                 queued_batch.delete()
                 batches += 1
         except:
