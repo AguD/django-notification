@@ -18,13 +18,12 @@ from django.utils.translation import ugettext_lazy as _
 from django.utils.translation import ugettext, get_language, activate
 
 from django.contrib.sites.models import Site
-from django.contrib.auth.models import User
 from django.contrib.auth.models import AnonymousUser
 from django.contrib.contenttypes.models import ContentType
 from django.contrib.contenttypes import generic
+from django.contrib.auth import get_user_model
 
 QUEUE_ALL = getattr(settings, "NOTIFICATION_QUEUE_ALL", False)
-
 
 class LanguageStoreNotAvailable(Exception):
     pass
@@ -62,7 +61,7 @@ class NoticeSetting(models.Model):
     of a given type to a given medium.
     """
     
-    user = models.ForeignKey(User, verbose_name=_("user"))
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, verbose_name=_("user"))
     notice_type = models.ForeignKey(NoticeType, verbose_name=_("notice type"))
     medium = models.CharField(_("medium"), max_length=1, choices=NOTICE_MEDIA)
     send = models.BooleanField(_("send"))
@@ -137,8 +136,8 @@ class NoticeManager(models.Manager):
 
 class Notice(models.Model):
     
-    recipient = models.ForeignKey(User, related_name="recieved_notices", verbose_name=_("recipient"))
-    sender = models.ForeignKey(User, null=True, related_name="sent_notices", verbose_name=_("sender"))
+    recipient = models.ForeignKey(settings.AUTH_USER_MODEL, related_name="recieved_notices", verbose_name=_("recipient"))
+    sender = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, related_name="sent_notices", verbose_name=_("sender"))
     message = models.TextField(_("message"))
     notice_type = models.ForeignKey(NoticeType, verbose_name=_("notice type"))
     added = models.DateTimeField(_("added"), auto_now_add=True)
@@ -249,28 +248,23 @@ def get_formatted_messages(formats, label, context):
     return format_templates
 
 
-def send_now(users, label, extra_context=None, on_site=True, sender=None):
+def send_now(recipients, label, extra_context={}, on_site=True, sender=None, for_user=True):
     """
-    Creates a new notice.
-    
-    This is intended to be how other apps create new notices.
-    
+    Expects recipients to be a list of emails or a list of users.
+    Only sends emails if recipients == list_of_emails otherwise
+    creates Notice objects linked to those users and sends to user.email
+
+    This is intended to be how other apps create new notices for users:
     notification.send(user, "friends_invite_sent", {
         "spam": "eggs",
         "foo": "bar",
-    )
-    
-    You can pass in on_site=False to prevent the notice emitted from being
+    )    
+    For users, you can pass in on_site=False to prevent the notice emitted from being
     displayed on the site.
+    *THIS FUNCTION CAN BE FURTHER IMPROVED
     """
-    if extra_context is None:
-        extra_context = {}
-    
-    notice_type = NoticeType.objects.get(label=label)
-    
     protocol = getattr(settings, "DEFAULT_HTTP_PROTOCOL", "http")
-    current_site = Site.objects.get_current()
-    
+    current_site = Site.objects.get_current()    
     notices_url = u"%s://%s%s" % (
         protocol,
         unicode(current_site),
@@ -285,29 +279,34 @@ def send_now(users, label, extra_context=None, on_site=True, sender=None):
         "notice.html",
         "full.html",
     ) # TODO make formats configurable
-    
-    for user in users:
-        recipients = []
-        # get user language for user from language store defined in
-        # NOTIFICATION_LANGUAGE_MODULE setting
-        try:
-            language = get_notification_language(user)
-        except LanguageStoreNotAvailable:
-            language = None
-        
-        if language is not None:
-            # activate the user's language
-            activate(language)
-        
-        # update context with user specific translations
-        context = Context({
-            "recipient": user,
+    # Common context for render the messages
+    context = Context({
             "sender": sender,
-            "notice": ugettext(notice_type.display),
             "notices_url": notices_url,
             "current_site": current_site,
         })
-        context.update(extra_context)
+    context.update(extra_context)
+
+    if for_user: #The next is only necessary if this notif is for an user
+        notice_type = NoticeType.objects.get(label=label)
+        User = get_user_model()
+        extra_context.update(dict(notice=ugettext(notice_type.display)))
+
+    for recipient in recipients:
+        to = [recipient]
+        is_an_user = True if for_user and isinstance(recipient, User) else False        
+        if is_an_user:
+            to = [recipient.email] if should_send(recipient, notice_type, "1")\
+                    and recipient.email and recipient.is_active else None
+            # get user language for user from language store defined in
+            # NOTIFICATION_LANGUAGE_MODULE setting
+            try:               
+                language = get_notification_language(recipient)
+                activate(language)
+            except LanguageStoreNotAvailable:
+                pass
+
+        context.update({"recipient": recipient})
         # get prerendered format messages
         messages = get_formatted_messages(formats, label, context)
         
@@ -316,69 +315,29 @@ def send_now(users, label, extra_context=None, on_site=True, sender=None):
             "message": messages["short.txt"],
         }, context).splitlines())
         
-        message_plaintext = render_to_string("notification/email_body.txt", {
+        body_plaintext = render_to_string("notification/email_body.txt", {
             "message": messages["full.txt"],
         }, context)
         
-        message_html = render_to_string("notification/email_body.txt", {
+        body_html = render_to_string("notification/email_body.txt", {
             "message": messages["full.html"],
         }, context)
         
-        notice = Notice.objects.create(recipient=user, message=messages["notice.html"],
-            notice_type=notice_type, on_site=on_site, sender=sender)
-        if should_send(user, notice_type, "1") and user.email and user.is_active: # Email
-            recipients.append(user.email)
-        if recipients:
-            try:
-                send_html_mail(subject, message_plaintext, message_html, settings.DEFAULT_FROM_EMAIL, recipients)
-            except NameError:
-                send_mail(subject, message_plaintext, settings.DEFAULT_FROM_EMAIL, recipients)
+        if is_an_user: # Only create Notice objects if this notification is for_user
+            notice = Notice.objects.create(
+                        recipient=recipient,
+                        message=messages["notice.html"],
+                        notice_type=notice_type,
+                        on_site=on_site,
+                        sender=sender
+                    )
+        if not to: continue
+        try:
+            send_html_mail(subject, body_plaintext, body_html, settings.DEFAULT_FROM_EMAIL, to)
+        except NameError:
+            send_mail(subject, body_plaintext, settings.DEFAULT_FROM_EMAIL, to)
     # reset environment to original language
     activate(current_language)
-
-def send_user_independant(email_list, label, extra_context=None, sender=None):
-    """
-    This is intended to only send emails, without the Notice's logic, i.e
-    without creating objects, or checking settings. This gives the possibility
-    to just send emails to a list, not to registered users on the db.
-    Like a wrapper around send_mail with the possibility to follow current
-    notification pattern of templates formats.
-    """ 
-    current_site = Site.objects.get_current()
-
-    formats = (
-        "short.txt",
-        "full.txt",
-        "notice.html",
-        "full.html",
-    )
-    
-    context = Context({
-        "sender": sender,
-        "current_site": current_site,
-    })
-    context.update(extra_context)
-    # get prerendered format messages
-    messages = get_formatted_messages(formats, label, context)
-    
-    # Strip newlines from subject
-    subject = "".join(render_to_string("notification/email_subject.txt", {
-        "message": messages["short.txt"],
-    }, context).splitlines())
-    
-    message_plaintext = render_to_string("notification/email_body.txt", {
-        "message": messages["full.txt"],
-    }, context)
-    
-    message_html = render_to_string("notification/email_body.txt", {
-        "message": messages["full.html"],
-    }, context)
-
-    if email_list:
-        try:
-            send_html_mail(subject, message_plaintext, message_html, settings.DEFAULT_FROM_EMAIL, email_list)
-        except NameError:
-            send_mail(subject, message_plaintext, settings.DEFAULT_FROM_EMAIL, email_list)
 
 def send(*args, **kwargs):
     """
@@ -401,21 +360,24 @@ def send(*args, **kwargs):
             return send_now(*args, **kwargs)
 
 
-def queue(users, label, extra_context=None, on_site=True, sender=None, when_to_send=None):
+def queue(recipients, label, extra_context=None, on_site=True, sender=None, for_user=True, when_to_send=None):
     """
     Queue the notification in NoticeQueueBatch. This allows for large amounts
     of user notifications to be deferred to a seperate process running outside
     the webserver.
+    WARNING and TO-DO: queue doesnt take into consideration the for_user flag,
+    so it assumes recipients are users!
+    We cant queue notices for emails only, to do for later.
     """
     if extra_context is None:
         extra_context = {}
-    if isinstance(users, QuerySet):
-        users = [row["pk"] for row in users.values("pk")]
+    if isinstance(recipients, QuerySet):
+        recipients = [row["pk"] for row in recipients.values("pk")]
     else:
-        users = [user.pk for user in users]
+        recipients = [user.pk for user in recipients]
     notices = []
-    for user in users:
-        notices.append((user, label, extra_context, on_site, sender, when_to_send))
+    for recipient in recipients:
+        notices.append((recipient, label, extra_context, on_site, sender, when_to_send))
     NoticeQueueBatch(pickled_data=pickle.dumps(notices).encode("base64")).save()
 
 
@@ -440,7 +402,7 @@ class ObservedItemManager(models.Manager):
 
 class ObservedItem(models.Model):
     
-    user = models.ForeignKey(User, verbose_name=_("user"))
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, verbose_name=_("user"))
     
     content_type = models.ForeignKey(ContentType)
     object_id = models.PositiveIntegerField()
