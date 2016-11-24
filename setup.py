@@ -20,9 +20,7 @@ setup(
     url="http://pinax-notifications.rtfd.org/",
     license="MIT",
     packages=find_packages(),
-    package_data={
-        "notifications": []
-    },
+    include_package_data=True,
     install_requires=[
         "django-appconf>=1.0.1"
     ],
