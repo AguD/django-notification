@@ -41,6 +41,7 @@ class NoticeType(models.Model):
     class Meta:
         verbose_name = _("notice type")
         verbose_name_plural = _("notice types")
+        db_table = "notification_noticetype"
 
     @classmethod
     def create(cls, label, display, description, default=2, verbosity=1):
@@ -98,7 +99,7 @@ class NoticeSetting(models.Model):
         verbose_name = _("notice setting")
         verbose_name_plural = _("notice settings")
         unique_together = ("user", "notice_type", "medium", "scoping_content_type", "scoping_object_id")
-
+        db_table = "notification_noticesetting"
 
 class NoticeQueueBatch(models.Model):
     """
@@ -107,6 +108,8 @@ class NoticeQueueBatch(models.Model):
     """
     pickled_data = models.TextField()
 
+    class Meta:
+        db_table = "notification_noticequeuebatch"
 
 def get_notification_language(user):
     """
